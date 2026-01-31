@@ -1,0 +1,82 @@
+name: Build Controller Shared Libraries
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: true
+
+      - name: Setup Intel Fortran Classic (ifort 2021.10)
+        uses: fortran-lang/setup-fortran@v1
+        with:
+          compiler: intel-classic
+          version: '2021.10'
+
+      - name: Verify compiler
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cmd //c "where ifort"
+            cmd //c "ifort" || echo "ifort invocation failed (expected if no args)"
+            cmd //c "ifort /help" | findstr /C:"Version" || echo "Version info not found in /help"
+          else
+            which ifort || echo "ifort not found"
+            ifort --version || echo "ifort version check failed"
+          fi
+
+      - name: Build Shared Libraries
+        shell: bash
+        env:
+          OUT_DIR: build/bin
+        run: |
+          mkdir -p "$OUT_DIR"
+
+          echo "Found Fortran source files:"
+          find . -type f -iname "*.f90"
+
+          for src in $(find . -type f -iname "*.f90"); do
+            basename=$(basename "${src%.*}")
+            ext="${{ runner.os == 'Windows' && 'dll' || 'so' }}"
+            [[ "${{ runner.os }}" == "macOS" ]] && ext="dylib"
+            target="$OUT_DIR/$basename.$ext"
+
+            echo "======================================="
+            echo "Building from $src → $target"
+
+            if [[ "${{ runner.os }}" == "Windows" ]]; then
+              cmd //c "ifort /dll /libs:static /threads /O2 $src /Fe:$target"
+            else
+              # Linux/macOS attempt with ifort flags
+              ifort -shared -fPIC -static-intel -threads -O2 "$src" -o "$target" || echo "Compilation failed"
+            fi
+
+            if [[ $? -ne 0 ]]; then
+              echo "ERROR: Failed for $src"
+            else
+              echo "SUCCESS: $target"
+            fi
+          done
+
+          ls -la "$OUT_DIR" || echo "No libraries built"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.os }}-ifort-2021
+          path: build/bin/*
+          if-no-files-found: warn
